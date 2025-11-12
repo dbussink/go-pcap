@@ -50,14 +50,36 @@ func (h *Handle) ReadPacketData() (data []byte, ci gopacket.CaptureInfo, err err
 }
 
 func (h *Handle) readPacketDataSyscall() (data []byte, ci gopacket.CaptureInfo, err error) {
-	// must memset the buffer
-	h.buf = make([]byte, len(h.buf))
-	read, err := unix.Read(h.fd, h.buf)
-	if err != nil {
-		return nil, ci, fmt.Errorf("error reading: %v", err)
-	}
-	if read <= 0 {
-		return nil, ci, fmt.Errorf("read no packets")
+	// Use select to wait for data, which allows Close() to interrupt
+	// With no timeout (nil), select blocks until data is ready or fd is closed
+	fdSet := &unix.FdSet{}
+	fdSet.Set(h.fd)
+	for {
+		_, err = unix.Select(h.fd+1, fdSet, nil, nil, nil)
+		if err != nil {
+			// Retry on EINTR (interrupted system call)
+			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
+				continue
+			}
+			// Other errors (e.g., fd was closed) are fatal
+			return nil, ci, err
+		}
+
+		// must memset the buffer
+		h.buf = make([]byte, len(h.buf))
+		read, err := unix.Read(h.fd, h.buf)
+		if err != nil {
+			// Retry on EINTR or EAGAIN
+			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
+				continue
+			}
+			return nil, ci, fmt.Errorf("error reading: %v", err)
+		}
+		if read <= 0 {
+			return nil, ci, fmt.Errorf("read no packets")
+		}
+		// Successfully read data, break out of retry loop
+		break
 	}
 	// separate the header and packet body
 	hdr := unix.BpfHdr{}

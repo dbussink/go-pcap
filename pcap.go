@@ -46,12 +46,16 @@ func OpenLive(device string, snaplen int32, promiscuous bool, timeout time.Durat
 func (h *Handle) Listen() chan Packet {
 	c := make(chan Packet, 50)
 	go func() {
+		defer close(c)
 		for {
 			b, ci, err := h.ReadPacketData()
 			c <- Packet{
 				B:     b,
 				Info:  ci,
 				Error: err,
+			}
+			if err != nil {
+				return
 			}
 		}
 	}()
